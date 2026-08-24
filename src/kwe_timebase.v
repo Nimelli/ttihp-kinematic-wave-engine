@@ -15,6 +15,8 @@ clk 10.000 MHz
             └─ slot counter 0..7 → frame  = 19.968 ms  (50.08 Hz)
  */
 
+`default_nettype none
+
 module kwe_timebase(
     input  wire         clk,
     input  wire         rst_n,

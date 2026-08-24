@@ -19,9 +19,9 @@ Brief:      Scale the input sine & clamp it
 
 Reset default should be **01** (50%) — a conservative amplitude that will not slam the
 linkages on first power-up with an untested mechanism.
-
-
 */
+
+`default_nettype none
 
 module kwe_amp_scale (
     input  wire signed [8:0] sine,      // -127 .. +127

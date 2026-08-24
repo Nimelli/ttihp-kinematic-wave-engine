@@ -38,6 +38,8 @@ usable at reduced amplitude, and they are cheap to keep. Reset default should be
 
 */
 
+`default_nettype none
+
 module kwe_speed_rom (
     input  wire  [3:0] sel,
     output reg  [12:0] inc

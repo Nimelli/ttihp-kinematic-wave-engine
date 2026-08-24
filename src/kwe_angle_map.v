@@ -22,6 +22,8 @@ mirror should make the last rod be similar as the first, like a mirror in the mi
 
 */
 
+`default_nettype none
+
 module kwe_angle_map (
     input  wire [6:0] phase,
     input  wire [2:0] slot,

@@ -19,6 +19,8 @@ LUT[i] = round(127 * sin((i + 0.5) * pi/64)),  i = 0..31
 
 */
 
+`default_nettype none
+
 module kwe_sine_lut (
     input  wire [4:0] idx,
     output reg [7:0] val      // LUT table from PRD §6.4

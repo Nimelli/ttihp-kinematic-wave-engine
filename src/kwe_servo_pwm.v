@@ -20,6 +20,8 @@ Brief:      Servo pulse output stage
  * of gap before the next channel's turn.
  */
 
+`default_nettype none
+
 module kwe_servo_pwm (
     input  wire         clk,
     input  wire         rst_n,

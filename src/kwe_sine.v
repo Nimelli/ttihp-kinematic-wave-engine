@@ -29,6 +29,8 @@ only 50 Hz is 8 LSB at the nominal 2 s period. The LUT is therefore *already* be
 dominant artifact — doubling it to 64 entries would halve an error that is not what you
 are seeing. */
 
+`default_nettype none
+
 module kwe_sine (
     input  wire        [6:0] angle,   // unsigned 0..127, one full turn
     output wire signed [8:0] sine     // -127 .. +127
