@@ -7,6 +7,20 @@ File Name:  kwe_amp_scale.v
 Author:     Jeremie W (willab.ch)
 Brief:      Scale the input sine & clamp it
 ======================================================================
+
+**AMP** — `ui[6:5]`, implemented as shifts and one subtract. No multiplier.
+
+| Sel | Scale | Expression | Servo swing |
+|---|---|---|---|
+| 00 | 25% | `s >>> 2` | ±15° |
+| 01 | 50% | `s >>> 1` | ±30° |
+| 10 | 75% | `s - (s >>> 2)` | ±45° |
+| 11 | 100% | `s` | ±60° |
+
+Reset default should be **01** (50%) — a conservative amplitude that will not slam the
+linkages on first power-up with an untested mechanism.
+
+
 */
 
 module kwe_amp_scale (
@@ -25,7 +39,7 @@ module kwe_amp_scale (
             2'b01:   scaled_sine = sine >>> 1;                  // 50%
             2'b10:   scaled_sine = sine - (sine >>> 2);         // 75%  (1 - 1/4)
             2'b11:   scaled_sine = sine;                        // 100%
-            default: scaled_sine = sine;
+            default: scaled_sine = sine >>> 1;                  // 50%
         endcase
     end
 
