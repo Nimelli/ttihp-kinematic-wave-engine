@@ -1,5 +1,13 @@
-/* Servo pulse output stage.
- *
+/*
+======================================================================
+Copyright (c) 2026 Jeremie W
+SPDX-License-Identifier: Apache-2.0
+
+File Name:  kwe_servo_pwm.v
+Author:     Jeremie W (willab.ch)
+Brief:      Servo pulse output stage
+======================================================================
+
  *   pos_r <= pos_next            on slot_start
  *   servo_pwm = (tick_cnt < 256 + pos_r) ? (1 << slot) : 0
  *

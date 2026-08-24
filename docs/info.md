@@ -9,12 +9,17 @@ You can also include images in this folder and reference them in the markdown. E
 
 ## How it works
 
-Explain how your project works
+The Kinematic Wave Engine is a dedicated 8-channel servo controller for the Tiny Tapeout
+platform. It autonomously drives an 8-rod kinetic sculpture, generating a continuous
+travelling sinusoidal wave that propels a ping-pong ball back and forth along a ~160 mm
+track. It is an interactive art piece demonstrating parallel hardware timing, real-time
+procedural animation, and custom silicon design.
+
 
 ## How to test
 
-Explain how to use your project
+Probe 8x output and connect to servo actuators
 
 ## External hardware
 
-List external hardware used in your project (e.g. PMOD, LED display, etc), if any
+8x servo SG90 + kinematic sculpture

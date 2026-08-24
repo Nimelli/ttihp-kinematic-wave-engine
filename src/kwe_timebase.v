@@ -1,4 +1,15 @@
-/* clk 10.000 MHz
+/* 
+======================================================================
+Copyright (c) 2026 Jeremie W
+SPDX-License-Identifier: Apache-2.0
+
+File Name:  kwe_timebase.v
+Author:     Jeremie W (willab.ch)
+Brief:      Generate the needed clocks, ticks, pulse, slots nb used 
+            in the project
+======================================================================
+
+clk 10.000 MHz
   └─ ÷39 prescaler          → tick   = 256.41 kHz  (3.90 us)
        └─ tick counter 0..639 → slot   = 2.496 ms
             └─ slot counter 0..7 → frame  = 19.968 ms  (50.08 Hz)
