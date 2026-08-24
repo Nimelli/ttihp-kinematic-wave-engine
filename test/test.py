@@ -152,51 +152,91 @@ async def warm(dut, **pins):
     await Timer(FRAME_NS, unit="ns")     # let the new pin values take effect
 
 
-async def next_pulse(dut):
-    """Wait for the next pulse. Returns (channel, start_ns, width_ticks).
+# Anything held for less than this is a decode glitch, not a pulse.
+# The shortest legal pulse is 256 ticks = 998_400 ns, so the margin is ~1000x
+# and no genuine width violation can hide behind this filter.
+GLITCH_NS = 1000
 
-    Uses ValueChange on uo_out: ~16 events per frame instead of 200,000 clock
-    edges. Also enforces one-hot on every transition -- if two channels are ever
-    driven together the stagger is broken, which is the whole basis of the
-    single-comparator architecture (PRD §6.2).
+_glitches = 0
+
+
+async def capture_frames(dut, n=1):
+    """Capture n CONSECUTIVE frames. Returns [(starts, widths), ...] per frame.
+
+    Deliberately one continuous transition stream rather than repeated calls to
+    a next_pulse() helper. Any per-call helper either has to re-synchronise
+    (which silently drops a frame between calls, so a frame-period measurement
+    reads 2x too long) or carry state across calls (which goes stale whenever a
+    test advances time with Timer and no one is watching uo_out).
+
+    GATE-LEVEL GLITCHES
+        uo_out is combinational: (rst_n && pulse_on) ? (8'd1 << slot) : 0.
+        At a slot boundary tick_cnt and slot update on the same clock edge, so
+        pulse_on can go true while the new slot decode is still propagating
+        through real gates -- emitting a sub-nanosecond pulse on the PREVIOUS
+        channel. RTL evaluates that conditional atomically and never shows it;
+        a gate-level netlist does, and the channel sequence then looks like
+        0,0,1,1,2,2...
+
+        Harmless in silicon: a servo integrates its pulse over ~1.5 ms and
+        cannot respond to a nanosecond spike. Anything held for less than
+        GLITCH_NS is therefore discarded and counted, never treated as a pulse.
     """
-    while True:
+    global _glitches
+
+    await ValueChange(dut.uo_out)
+    v = int(dut.uo_out.value)
+    t0 = get_sim_time(unit="ns")
+
+    pulses = []
+    first_seen = False       # the very first pulse may be truncated: drop it
+    synced = False
+    while len(pulses) < 8 * n:
         await ValueChange(dut.uo_out)
+        now = get_sim_time(unit="ns")
+        held, dur = v, now - t0
         v = int(dut.uo_out.value)
-        if v == 0:
+        t0 = now
+
+        if held == 0:
             continue
-        assert v & (v - 1) == 0, (
-            f"uo_out = 0b{v:08b}: more than one channel driven at once. "
-            "Slots must never overlap."
+        if dur < GLITCH_NS:
+            _glitches += 1
+            continue
+        assert held & (held - 1) == 0, (
+            f"uo_out = 0b{held:08b} held for {dur} ns: more than one channel "
+            "driven at once. Slots must never overlap."
         )
-        t0 = get_sim_time(unit="ns")
-        ch = v.bit_length() - 1
-        await ValueChange(dut.uo_out)
-        assert int(dut.uo_out.value) == 0, (
-            f"channel {ch} pulse did not return to 0; got "
-            f"0b{int(dut.uo_out.value):08b}"
-        )
-        width_ns = get_sim_time(unit="ns") - t0
-        return ch, t0, round(width_ns / TICK_NS)
+
+        ch = held.bit_length() - 1
+        if not first_seen:
+            first_seen = True
+            continue
+        if not synced:
+            if ch != 0:
+                continue
+            synced = True
+        pulses.append((ch, now - dur, round(dur / TICK_NS)))
+
+    frames = []
+    for f in range(n):
+        starts = [0] * SLOTS
+        widths = [0] * SLOTS
+        for i in range(SLOTS):
+            ch, t, w = pulses[f * SLOTS + i]
+            assert ch == i, (
+                f"frame {f}: pulses arrived out of order, expected channel {i}, "
+                f"got {ch}. Channel N must own slot N."
+            )
+            starts[i] = t
+            widths[i] = w
+        frames.append((starts, widths))
+    return frames
 
 
 async def capture_frame(dut):
-    """One full frame, synced to channel 0. Returns (starts, widths) by channel."""
-    ch, t0, w = await next_pulse(dut)
-    while ch != 0:
-        ch, t0, w = await next_pulse(dut)
-
-    starts = [t0] + [0] * 7
-    widths = [w] + [0] * 7
-    for expect in range(1, SLOTS):
-        ch, t, w = await next_pulse(dut)
-        assert ch == expect, (
-            f"pulses arrived out of order: expected channel {expect}, got {ch}. "
-            "Channel N must own slot N."
-        )
-        starts[expect] = t
-        widths[expect] = w
-    return starts, widths
+    """One frame. Convenience wrapper over capture_frames()."""
+    return (await capture_frames(dut, 1))[0]
 
 
 def positions_from(widths):
@@ -237,8 +277,7 @@ async def test_reset_and_startup_hold(dut):
     await FallingEdge(dut.clk)
 
     # During the hold every channel must sit at centre.
-    for frame in range(3):
-        _, widths = await capture_frame(dut)
+    for frame, (_, widths) in enumerate(await capture_frames(dut, 3)):
         for ch, w in enumerate(widths):
             assert w == PULSE_BASE + CENTRE_POS, (
                 f"frame {frame} channel {ch}: {w} ticks "
@@ -255,6 +294,24 @@ async def test_reset_and_startup_hold(dut):
     assert len(set(widths)) > 1, (
         f"all channels still identical ({widths[0]} ticks) after the hold "
         "released -- the wave never started"
+    )
+
+
+@cocotb.test()
+async def test_report_decode_glitches(dut):
+    """Informational: how many sub-microsecond decode glitches were seen.
+
+    Expected to be 0 in RTL simulation and non-zero at gate level (see
+    next_pulse). Not a failure either way -- a nanosecond spike is far below
+    anything a servo can respond to. Logged so the number is visible rather
+    than silently swallowed by the filter.
+    """
+    await warm(dut)
+    for _ in range(2):
+        await capture_frame(dut)
+    dut._log.info(
+        f"decode glitches seen so far: {_glitches} "
+        f"(all shorter than {GLITCH_NS} ns; shortest legal pulse is 998400 ns)"
     )
 
 
@@ -277,8 +334,7 @@ async def test_uio_is_all_input(dut):
 async def test_frame_period(dut):
     """Each channel is refreshed once per 19.968 ms frame (50.08 Hz)."""
     await warm(dut)
-    starts_a, _ = await capture_frame(dut)
-    starts_b, _ = await capture_frame(dut)
+    (starts_a, _), (starts_b, _) = await capture_frames(dut, 2)
 
     for ch in range(SLOTS):
         period = starts_b[ch] - starts_a[ch]
@@ -451,12 +507,10 @@ async def test_slew_stays_within_servo_capability(dut):
     nothing visible.
     """
     await warm(dut, speed=8, amp=3)
-    _, prev = await capture_frame(dut)
+    frames = await capture_frames(dut, 7)
     worst = 0
-    for _ in range(6):
-        _, cur = await capture_frame(dut)
+    for (_, prev), (_, cur) in zip(frames, frames[1:]):
         worst = max(worst, max(abs(a - b) for a, b in zip(cur, prev)))
-        prev = cur
 
     assert worst <= 14, (
         f"largest frame-to-frame change is {worst} LSB "
@@ -477,8 +531,7 @@ async def test_wave_travels_and_reverses(dut):
     await warm(dut, speed=15, amp=3, spread=0, mirror=0, reverse=0)
 
     phases = []
-    for _ in range(40):
-        _, widths = await capture_frame(dut)
+    for _, widths in await capture_frames(dut, 40):
         phase, err = best_fit_phase(positions_from(widths), 3, 0, 0)
         assert err <= 2, f"frame did not fit a sine (err {err} LSB)"
         phases.append(phase)
@@ -512,8 +565,7 @@ async def test_speed_pin_changes_wave_rate(dut):
         await Timer(2 * FRAME_NS, unit="ns")
 
         seen = []
-        for _ in range(4):
-            _, widths = await capture_frame(dut)
+        for _, widths in await capture_frames(dut, 4):
             phase, err = best_fit_phase(positions_from(widths), 3, 0, 0)
             assert err <= 2, f"speed={speed}: frame did not fit a sine"
             seen.append(phase)

@@ -50,6 +50,34 @@ module kwe_servo_pwm (
     wire pulse_on = (tick_cnt < {1'b0, 1'b1, pos_r});
 
     // Drive only the channel owning this slot; every other output stays low.
-    assign servo_pwm = (rst_n && pulse_on) ? (8'd1 << slot) : 8'd0;
+    //
+    // Previous combinational version:
+    //     assign servo_pwm = (rst_n && pulse_on) ? (8'd1 << slot) : 8'd0;
+    //
+    // That is functionally correct but GLITCHES at every slot boundary. tick_cnt
+    // and slot are both registers updating on the same clock edge, so pulse_on
+    // goes true while the new slot decode is still propagating through real
+    // gates -- emitting a sub-nanosecond pulse on the PREVIOUS channel. RTL
+    // evaluates the conditional atomically and never shows it; the gate-level
+    // netlist does, and it broke the gate-level CI run.
+    //
+    // Registering the output fixes it at the source: a flop changes only on a
+    // clock edge, so the decode has settled before it is sampled and the pin is
+    // glitch-free by construction. Costs 8 flops but removes the 8 AND gates
+    // that were doing the rst_n gating (the flop's async reset does that now),
+    // so the whole chip goes 605 -> 613 cells. Output is delayed one clock
+    // (100 ns); both edges shift equally so the pulse width is unchanged --
+    // 100 ns out of ~1500 us is 0.007%, invisible to a servo.
+    reg [7:0] servo_pwm_r;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            servo_pwm_r <= 8'd0;
+        end else begin
+            servo_pwm_r <= pulse_on ? (8'd1 << slot) : 8'd0;
+        end
+    end
+
+    assign servo_pwm = servo_pwm_r;
 
 endmodule

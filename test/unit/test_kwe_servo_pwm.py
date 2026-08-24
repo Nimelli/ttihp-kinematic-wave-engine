@@ -5,7 +5,7 @@ Unit tests for kwe_servo_pwm  --  Kinematic Wave Engine stage 2.
 Contract under test (PRD-v2 §6.1/§6.2, BUILD-PLAN §2):
 
     pos_r  <= pos_next            on slot_start
-    servo_pwm = (tick_cnt < {1'b1, pos_r}) ? (8'd1 << slot) : 8'd0
+    servo_pwm <= (tick_cnt < {1'b1, pos_r}) ? (8'd1 << slot) : 8'd0   (registered)
 
     {1'b1, pos_r} is a CONCATENATION, not an addition -- it *is* 256 + pos.
     No adder belongs in this module.
@@ -107,9 +107,15 @@ async def latch_pos(dut, pos, slot):
 
 
 async def probe(dut, tick):
-    """Read servo_pwm with tick_cnt forced to `tick`."""
+    """Read servo_pwm with tick_cnt forced to `tick`.
+
+    servo_pwm is REGISTERED, so the flop must be given its clock edge before the
+    result is readable. Reading combinationally here would return the previous
+    tick's output.
+    """
     await FallingEdge(dut.clk)
     dut.tick_cnt.value = tick
+    await RisingEdge(dut.clk)     # the output flop samples the decode here
     await settle(dut)
     return u(dut.servo_pwm)
 
@@ -129,7 +135,10 @@ async def test_reset_outputs_low(dut):
     """servo_pwm is all-zero throughout reset, whatever tick_cnt does.
 
     This cannot be satisfied by pos_r's reset value alone: pos_r = 0 still encodes
-    a 256-tick (1 ms) pulse. servo_pwm must be explicitly gated by rst_n.
+    a 256-tick (1 ms) pulse. The output flop's own async reset is what holds the
+    pins low (before the output was registered this needed an explicit rst_n term
+    in the combinational path).
+
     Servos must be free to be positioned by hand during mechanical assembly.
     """
     ensure_clock(dut)
@@ -285,6 +294,7 @@ async def test_one_hot_across_a_full_frame(dut):
         dut.slot.value = slot
         dut.slot_start.value = 1 if tick == TICKS_PER_SLOT - 1 else 0
         dut.pos_next.value = POS_PATTERN[nxt]
+        await RisingEdge(dut.clk)     # registered output: flop samples here
         await settle(dut)
 
         out = u(dut.servo_pwm)
