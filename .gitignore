@@ -16,3 +16,6 @@ private/
 test/unit/sim_build
 test/unit/__pycache__/
 test/unit/results.xml
+sim/.venv/
+sim/*.png
+sim/__pycache__/

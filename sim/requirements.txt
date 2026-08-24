@@ -1,0 +1,4 @@
+pymunk>=7.0
+numpy
+matplotlib
+pygame-ce>=2.5
