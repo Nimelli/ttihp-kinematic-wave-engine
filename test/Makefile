@@ -6,7 +6,15 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v
+PROJECT_SOURCES = kwe_top.v \
+				kwe_timebase.v \
+				kwe_servo_pwm.v \
+				kwe_sine_lut.v \
+				kwe_sine.v \
+				kwe_angle_map.v \
+				kwe_amp_scale.v \
+				kwe_speed_rom.v \
+				kwe_phase_gen.v
 
 ifneq ($(GATES),yes)
 
