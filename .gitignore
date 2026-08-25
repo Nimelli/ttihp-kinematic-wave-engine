@@ -19,3 +19,16 @@ test/unit/results.xml
 sim/.venv/
 sim/*.png
 sim/__pycache__/
+
+test/fpga/sim_build
+test/fpga/__pycache__/
+test/fpga/results.xml
+
+# Vivado output. build.tcl is non-project mode, so this is the only
+# directory it writes -- there is no .xpr or IP cache to exclude.
+fpga/build/
+fpga/__pycache__/
+fpga/clockInfo.txt
+vivado*.jou
+vivado*.log
+.Xil/

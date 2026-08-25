@@ -17,10 +17,19 @@ Almost pure wiring. The chip is two halves joined by kwe_timebase:
                                               hold ------------|
 
 The datapath from `phase` all the way to `pos` is one long combinational
-chain -- kwe_phase_gen holds the only register in it. Nothing is pipelined
-because a whole slot (2.496 ms, ~24000 clocks) is available to settle in.
-That is also why all 8 channels can share one datapath instead of eight
-copies of it.
+chain -- kwe_phase_gen holds the only register in it. It is not pipelined
+because it does not need to be: it is only *sampled* once per slot, when
+kwe_servo_pwm latches pos_next on slot_start.
+
+CAREFUL: "sampled once per slot" is a functional statement, not a timing one.
+Static timing analysis assumes single-cycle paths by default, so this chain
+must still settle within ONE CLOCK PERIOD (signed off at 20 ns, config.json
+CLOCK_PERIOD) -- not within a slot. It has roughly 40 levels of logic, a few
+ns at 130 nm, so it meets that with a wide margin and needs no multicycle
+constraint. But do not read the slot period as available slack.
+
+Sharing one datapath across all 8 channels is possible for the same reason:
+only one channel is ever active at a time (PRD 6.2).
 */
 
 `default_nettype none
