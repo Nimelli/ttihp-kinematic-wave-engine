@@ -141,6 +141,98 @@ SPI_CS_IDLE = 1 << 0
 UIO_OE_MISO = 1 << 3
 
 
+# ===========================================================================
+# SPI master
+#
+# Just enough of a mode 0 master to set the parameter registers. The link
+# itself has 21 tests of its own in test/unit/test_spis_top.py; what these
+# helpers are for is checking what the registers DO once written.
+#
+# Driven at the documented ceiling, SCK = clk/4 = 2.5 MHz, because that is the
+# corner worth exercising and because a frame then costs ~13 us against a
+# 19.968 ms frame -- cheap enough to write registers inside a test.
+# ===========================================================================
+
+# clk per SCK half period. The binding limit is the MISO turnaround, not edge
+# detection: a SCK falling edge needs 3 system clocks to reach the pad through
+# the synchroniser, plus one for the asynchronous alignment, so half >= 4.
+# See the header of spis_synchro.v. 4 is the worst case; going faster here
+# reads data shifted one bit late.
+SPI_HALF_CLKS = 4
+SPI_CS_CLKS = 8         # CS setup/hold; spis_phy needs ~4 to get the MSB out
+
+REG_WAVE0 = 0x00
+REG_WAVE1 = 0x01
+REG_ID = 0x7F
+CHIP_ID = 0xA5
+
+CMD_READ = 0x03
+CMD_WRITE = 0x02
+
+
+def pack_wave0(speed=8, amp=3, spread=0, mirror=0):
+    """WAVE0 as registers.v lays it out."""
+    return (speed & 0xF) | ((amp & 3) << 4) | ((spread & 1) << 6) | ((mirror & 1) << 7)
+
+
+def pack_wave1(reverse=0):
+    return reverse & 3
+
+
+def _uio_set(dut, bit, value):
+    cur = int(dut.uio_in.value)
+    dut.uio_in.value = (cur | (1 << bit)) if value else (cur & ~(1 << bit))
+
+
+async def spi_xfer(dut, tx_bytes):
+    """One CS-low frame. Returns the bytes clocked back on MISO.
+
+    Pins move on falling clk edges: a real master is asynchronous, which is
+    what spis_synchro exists to handle, but driving asynchronously in
+    simulation only adds delta-cycle races that make failures unreproducible.
+    """
+    await FallingEdge(dut.clk)
+    _uio_set(dut, 0, 0)                          # CS low
+    await ClockCycles(dut.clk, SPI_CS_CLKS)
+
+    rx = []
+    for byte in tx_bytes:
+        got = 0
+        for bit_idx in range(7, -1, -1):
+            await FallingEdge(dut.clk)
+            _uio_set(dut, 2, (byte >> bit_idx) & 1)      # MOSI
+            await ClockCycles(dut.clk, SPI_HALF_CLKS)
+
+            # The master latches MISO at the rising edge; it has been stable
+            # since the previous falling edge.
+            oe = int(dut.uio_oe.value) & UIO_OE_MISO
+            bit = ((int(dut.uio_out.value) >> 3) & 1) if oe else 1
+            got = (got << 1) | bit
+
+            await FallingEdge(dut.clk)
+            _uio_set(dut, 1, 1)                          # SCK high
+            await ClockCycles(dut.clk, SPI_HALF_CLKS)
+            await FallingEdge(dut.clk)
+            _uio_set(dut, 1, 0)                          # SCK low
+        rx.append(got)
+
+    await ClockCycles(dut.clk, SPI_CS_CLKS)
+    await FallingEdge(dut.clk)
+    _uio_set(dut, 0, 1)                          # CS high
+    await ClockCycles(dut.clk, 4)
+    return rx
+
+
+async def spi_write_reg(dut, addr, value):
+    """WRITE is 3 bytes: opcode, address, data."""
+    await spi_xfer(dut, [CMD_WRITE, addr, value])
+
+
+async def spi_read_reg(dut, addr):
+    """READ is 4 bytes; the register lands on the last one. See spis_app.v."""
+    return (await spi_xfer(dut, [CMD_READ, addr, 0x00, 0x00]))[3]
+
+
 async def hard_reset(dut):
     ensure_clock(dut)
     dut.rst_n.value = 0
@@ -624,4 +716,208 @@ async def test_speed_pin_changes_wave_rate(dut):
         f"phase advance per frame did not increase with the SPEED pin: {rates}. "
         f"Expected roughly {SPEED_TABLE[4] / 512:.1f}, "
         f"{SPEED_TABLE[9] / 512:.1f}, {SPEED_TABLE[14] / 512:.1f} steps/frame."
+    )
+
+
+# ===========================================================================
+# SPI parameter override
+#
+# The chip's priority is auto-mode. These tests exist to prove the SPI link
+# cannot cost anything there: the first one is the one that would block a
+# tapeout if it failed.
+# ===========================================================================
+
+@cocotb.test()
+async def test_spi_registers_do_not_affect_auto_mode(dut):
+    """With MODE_SW low, the SPI registers must be inert.
+
+    This is the test that makes the SPI block safe to ship. It fills every
+    writable register with values that would produce a completely different
+    wave and requires the output to stay the one the PINS asked for.
+
+    Comparing raw pulse widths would not work: the wave is moving, so two
+    captures taken at different times differ even when nothing has changed.
+    The check is therefore phase-invariant, and it covers both halves of the
+    parameter set:
+
+      SHAPE  -- amp, spread and mirror are pinned by fitting the observed
+                positions against a model built from the PIN settings. A
+                leaked spread or mirror changes the geometry and no phase
+                fits; a leaked amp changes the envelope.
+      RATE   -- speed is pinned by measuring how far the phase advances over
+                a fixed number of frames. Every junk value below decodes to a
+                different speed code, from 0 to 15 against the pin's 8, so a
+                leak here shows up as a wildly different advance.
+    """
+    PIN_SPEED, PIN_AMP, PIN_SPREAD, PIN_MIRROR = 8, 3, 0, 0
+    FRAMES = 8
+
+    async def measure():
+        """(worst shape error, phase advance) over FRAMES consecutive frames."""
+        caps = await capture_frames(dut, FRAMES)
+        fits = [best_fit_phase(positions_from(w), PIN_AMP, PIN_SPREAD, PIN_MIRROR)
+                for _, w in caps]
+        phases = [p for p, _ in fits]
+        return max(e for _, e in fits), (phases[-1] - phases[0]) % TURN
+
+    await warm(dut, speed=PIN_SPEED, amp=PIN_AMP, spread=PIN_SPREAD,
+               mirror=PIN_MIRROR, reverse=0, mode=0)
+
+    base_err, base_advance = await measure()
+    assert base_err <= 2, (
+        f"the reference capture itself does not fit the pin settings "
+        f"(error {base_err} LSB) -- something is wrong before SPI is involved"
+    )
+
+    for value in (0xFF, 0x00, 0xAA, 0x55):
+        await spi_write_reg(dut, REG_WAVE0, value)
+        await spi_write_reg(dut, REG_WAVE1, value)
+
+        # Confirm the write actually landed, so a silently dead SPI link
+        # cannot make this test pass for the wrong reason.
+        assert await spi_read_reg(dut, REG_WAVE0) == value, (
+            f"WAVE0 did not accept 0x{value:02X} -- the link is not working, so "
+            "this test is not proving anything about isolation"
+        )
+
+        err, advance = await measure()
+
+        assert err <= 2, (
+            f"after writing 0x{value:02X} to the SPI registers, the array no "
+            f"longer fits the PIN settings (speed={PIN_SPEED} amp={PIN_AMP} "
+            f"spread={PIN_SPREAD} mirror={PIN_MIRROR}): worst error {err} LSB, "
+            f"allowed 2. MODE_SW is low, so amp/spread/mirror must still come "
+            f"from the pins."
+        )
+        assert abs(advance - base_advance) <= 2, (
+            f"after writing 0x{value:02X}, the phase advanced {advance} units "
+            f"over {FRAMES} frames against {base_advance} before -- SPEED is "
+            f"leaking from the SPI register (0x{value:02X} decodes to speed "
+            f"{value & 0xF}) even though MODE_SW is low"
+        )
+
+
+@cocotb.test()
+async def test_spi_mode_defaults_are_a_shippable_wave(dut):
+    """MODE_SW high with no master attached must still run a good wave.
+
+    This is the stuck-pin case. If MODE_SW were ever tied or bonded high and
+    nothing ever wrote a register, the chip runs on the reset contents of
+    registers.v -- so those have to be a pattern worth shipping, not a
+    degenerate one.
+    """
+    await hard_reset(dut)
+    set_pins(dut, mode=1)
+    await Timer((HOLD_FRAMES + 2) * FRAME_NS, unit="ns")
+
+    _, widths = await capture_frame(dut)
+    assert len(widths) == 8, f"expected 8 pulses, got {len(widths)}"
+    for ch, w in enumerate(widths):
+        assert PULSE_BASE <= w <= PULSE_MAX, (
+            f"channel {ch} pulse {w} clocks is outside the servo contract "
+            f"[{PULSE_BASE}, {PULSE_MAX}] on SPI defaults"
+        )
+
+    # amp=3 in the defaults, so the wave must actually be moving, not flat.
+    obs = positions_from(widths)
+    assert max(abs(p - CENTRE_POS) for p in obs) > 20, (
+        f"SPI defaults produced an almost flat array {obs} -- the reset value "
+        "of WAVE0 is supposed to be an obviously-alive wave (speed 8, amp 3)"
+    )
+
+    global _warm
+    _warm = False        # this test reset the DUT; make warm() redo the hold
+
+
+@cocotb.test()
+async def test_spi_parameters_drive_the_wave(dut):
+    """With MODE_SW high, AMP written over SPI must change the deflection.
+
+    Mirrors test_amplitude_scaling, but with the setting arriving over the bus
+    instead of the pins. The pins are left at amp=0 throughout, so a passing
+    result cannot come from them.
+    """
+    await warm(dut, speed=8, amp=0, spread=0, mirror=0, reverse=0, mode=1)
+
+    peaks = []
+    for amp in range(4):
+        await spi_write_reg(dut, REG_WAVE0, pack_wave0(speed=8, amp=amp))
+        await Timer(FRAME_NS, unit="ns")
+        _, widths = await capture_frame(dut)
+        peaks.append(max(abs(p - CENTRE_POS) for p in positions_from(widths)))
+
+    for a in range(3):
+        assert peaks[a] < peaks[a + 1], (
+            f"amp={a} peaks at {peaks[a]} LSB but amp={a + 1} peaks at "
+            f"{peaks[a + 1]} -- AMP over SPI must deflect further. All: {peaks}"
+        )
+    assert peaks[3] >= 100, (
+        f"amp=100% over SPI only reached {peaks[3]} LSB from centre, expected "
+        f"~127. All four: {peaks}"
+    )
+
+
+@cocotb.test()
+async def test_mode_sw_hands_control_back_and_forth(dut):
+    """Toggling MODE_SW must swap sources cleanly, with no illegal pulse.
+
+    Pins and registers are deliberately set to different waves, so each toggle
+    has to produce a visibly different output -- and every pulse emitted during
+    the switch still has to satisfy the servo contract.
+    """
+    await warm(dut, speed=8, amp=3, spread=0, mirror=0, reverse=0, mode=0)
+    await spi_write_reg(dut, REG_WAVE0, pack_wave0(speed=8, amp=0))
+
+    set_pins(dut, speed=8, amp=3, spread=0, mirror=0, reverse=0, mode=0)
+    await Timer(FRAME_NS, unit="ns")
+    _, pin_widths = await capture_frame(dut)
+
+    set_pins(dut, speed=8, amp=3, spread=0, mirror=0, reverse=0, mode=1)
+    await Timer(FRAME_NS, unit="ns")
+    _, spi_widths = await capture_frame(dut)
+
+    set_pins(dut, speed=8, amp=3, spread=0, mirror=0, reverse=0, mode=0)
+    await Timer(FRAME_NS, unit="ns")
+    _, back_widths = await capture_frame(dut)
+
+    for label, widths in (("pins", pin_widths), ("spi", spi_widths),
+                          ("pins again", back_widths)):
+        for ch, w in enumerate(widths):
+            assert PULSE_BASE <= w <= PULSE_MAX, (
+                f"{label}: channel {ch} pulse {w} clocks is outside "
+                f"[{PULSE_BASE}, {PULSE_MAX}] while switching MODE_SW"
+            )
+
+    pin_peak = max(abs(p - CENTRE_POS) for p in positions_from(pin_widths))
+    spi_peak = max(abs(p - CENTRE_POS) for p in positions_from(spi_widths))
+    assert spi_peak < pin_peak, (
+        f"MODE_SW high did not take the amp=0 setting from the register file: "
+        f"peak {spi_peak} vs {pin_peak} on the pins"
+    )
+
+
+@cocotb.test()
+async def test_spi_register_map(dut):
+    """The map in registers.v: two RW bytes and a read-only ID."""
+    await warm(dut, mode=0)
+
+    assert await spi_read_reg(dut, REG_ID) == CHIP_ID, (
+        f"ID register read 0x{await spi_read_reg(dut, REG_ID):02X}, expected "
+        f"0x{CHIP_ID:02X}"
+    )
+
+    # ID is outside the writable array, so a write to it must be dropped.
+    await spi_write_reg(dut, REG_ID, 0x00)
+    assert await spi_read_reg(dut, REG_ID) == CHIP_ID, (
+        "the ID register accepted a write -- it is supposed to be a constant"
+    )
+
+    for addr in (REG_WAVE0, REG_WAVE1):
+        await spi_write_reg(dut, addr, 0x5A)
+        assert await spi_read_reg(dut, addr) == 0x5A, (
+            f"register 0x{addr:02X} did not hold a written value"
+        )
+
+    assert await spi_read_reg(dut, 0x40) == 0x00, (
+        "an out-of-range read must return 0x00"
     )

@@ -45,16 +45,51 @@ module tt_um_nimelli_kinematic_wave_engine (
     input  wire       rst_n     // active-low reset
 );
 
-    // Pin map
-    // Those are all tuning parameters to be able to somehow change them slightly
-    // instead of hardcoded params
-    wire [3:0] speed_sel   = ui_in[4:1];    // 16 wave periods, 20.1 s .. 0.26 s
-    wire [1:0] amp_sel     = ui_in[6:5];    // 25 / 50 / 75 / 100 %
-    wire       spread_sel  = ui_in[7];      // 0 = full wavelength, 1 = half
-    wire       mirror_sel  = uio_in[4];     // 1 = two-ball mirrored mode
-    wire [1:0] reverse_sel = uio_in[6:5];   // reverse after 2 / 3 / 4 / 6 cycles
+    // ---------------------------------------------------------------
+    // Parameter source: pins (auto) or SPI registers
+    //
+    //   MODE_SW = 0   AUTO -- parameters come from the pins, exactly as they
+    //                 did before the SPI link existed. This is the default:
+    //                 an undriven ui_in reads 0 on the TT harness.
+    //   MODE_SW = 1   SPI  -- parameters come from the register file.
+    //
+    // Three properties make this safe to add to a chip whose priority is
+    // auto-mode:
+    //
+    // 1. The select is a PAD, not a register. Nothing reachable over SPI
+    //    touches it, so with MODE_SW low the whole SPI block is a spectator:
+    //    its registers can hold any value at all and the wave engine behaves
+    //    exactly as before. test_spi_registers_do_not_affect_auto_mode checks
+    //    exactly that: it writes junk into every register and requires the
+    //    array to keep both the SHAPE (amp/spread/mirror, fitted against a
+    //    model of the pin settings) and the RATE (speed, from how far the
+    //    phase advances per frame) that the pins asked for.
+    //
+    // 2. Every SPI-sourced field is a bit-slice of the SAME WIDTH as the pin
+    //    it replaces, so the two sources span an identical value space. There
+    //    is no setting reachable over SPI that the pins could not already
+    //    reach -- kwe_speed_rom decodes all 16 speed codes, amp all 4, and so
+    //    on. test_pulse_bounds_across_all_settings already sweeps that space.
+    //
+    // 3. The reset state of the register file is a wave worth shipping
+    //    (speed=8, amp=3), so even a MODE_SW stuck high with no master
+    //    attached leaves the chip running a good-looking pattern rather than
+    //    a degenerate one.
+    //
+    // MODE_SW is used unsynchronised, like every other parameter pin here. A
+    // slow or bouncing edge can only mix pin-sourced and SPI-sourced fields
+    // for a cycle, and by (2) every such mixture is itself a legal setting.
+    // ---------------------------------------------------------------
+    wire       mode_spi = ui_in[0];         // MODE_SW
 
-    // ui_in[0] is MODE_SW, reserved for the P1 SPI override. Unused for now.
+    wire [7:0] spi_wave0;                   // reg 0x00, see registers.v
+    wire [7:0] spi_wave1;                   // reg 0x01
+
+    wire [3:0] speed_sel   = mode_spi ? spi_wave0[3:0] : ui_in[4:1];   // 16 wave periods, 20.1 s .. 0.26 s
+    wire [1:0] amp_sel     = mode_spi ? spi_wave0[5:4] : ui_in[6:5];   // 25 / 50 / 75 / 100 %
+    wire       spread_sel  = mode_spi ? spi_wave0[6]   : ui_in[7];     // 0 = full wavelength, 1 = half
+    wire       mirror_sel  = mode_spi ? spi_wave0[7]   : uio_in[4];    // 1 = two-ball mirrored mode
+    wire [1:0] reverse_sel = mode_spi ? spi_wave1[1:0] : uio_in[6:5];  // reverse after 2 / 3 / 4 / 6 cycles
 
 
     // ---------------------------------------------------------------
@@ -160,9 +195,8 @@ module tt_um_nimelli_kinematic_wave_engine (
     // Mode 0, and SCK is oversampled rather than used as a clock, so the
     // master must stay at or below clk/4 = 2.5 MHz. See spis_synchro.v.
     //
-    // The register file is NOT wired to the wave parameters yet. This stage
-    // only proves the link works end to end; ui_in[0] (MODE_SW) still does
-    // nothing, and the parameters still come from the pins above.
+    // The register file drives the wave parameters only when MODE_SW is high;
+    // see the parameter mux at the top of this file.
     // ---------------------------------------------------------------
     wire spi_miso;
     wire spi_miso_oe;
@@ -176,7 +210,10 @@ module tt_um_nimelli_kinematic_wave_engine (
         .spi_cs      (uio_in[0]),
 
         .spi_miso    (spi_miso),
-        .spi_miso_oe (spi_miso_oe)
+        .spi_miso_oe (spi_miso_oe),
+
+        .wave0       (spi_wave0),
+        .wave1       (spi_wave1)
     );
 
 
@@ -192,10 +229,9 @@ module tt_um_nimelli_kinematic_wave_engine (
 
     // Unused inputs, listed to keep the linter quiet.
     //   ena       - always 1 while powered
-    //   ui_in[0]  - MODE_SW, reserved for the P1 SPI parameter override
     //   uio_in[3] - MISO is an output; the input leg of the pad is unused
     //   uio_in[7] - spare
     //   tick_en   - kwe_servo_pwm derives what it needs from tick_cnt
-    wire _unused = &{ena, ui_in[0], uio_in[3], uio_in[7], tick_en, 1'b0};
+    wire _unused = &{ena, uio_in[3], uio_in[7], tick_en, 1'b0};
 
 endmodule

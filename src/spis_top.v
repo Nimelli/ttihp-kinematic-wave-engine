@@ -30,7 +30,13 @@ module spis_top (
     input  wire spi_cs,
 
     output wire spi_miso,
-    output wire spi_miso_oe     // 1 = drive, 0 = Hi-Z (uio_oe is a per-bit enable)
+    output wire spi_miso_oe,    // 1 = drive, 0 = Hi-Z (uio_oe is a per-bit enable)
+
+    // Live register contents, for the parameter mux in kwe_top. See
+    // registers.v for the map. These are plain flop outputs: they are only
+    // ever LOOKED AT by the wave engine, and only when MODE_SW says so.
+    output wire [7:0] wave0,
+    output wire [7:0] wave1
 );
 
     // ---- spis_synchro -> spis_phy ------------------------------------
@@ -114,7 +120,9 @@ module spis_top (
         .addr               (reg_addr),
         .rdata              (reg_rdata),
         .wdata              (reg_wdata),
-        .wr_en              (reg_wr_en)
+        .wr_en              (reg_wr_en),
+        .wave0              (wave0),
+        .wave1              (wave1)
     );
 
 endmodule

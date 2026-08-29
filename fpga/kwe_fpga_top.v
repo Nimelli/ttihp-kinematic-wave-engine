@@ -42,6 +42,10 @@ Three problems this wrapper solves:
    test fixture, so what the RP2040 talks to is exactly what the chip will
    present.
 
+   Whether those registers reach the wave engine is MODE_SW, ui[0]. It powers
+   up LOW -- auto mode, parameters from the pins, SPI inert -- and 'n' toggles
+   it, so the safe state is the one you get by doing nothing.
+
 Serial commands, 115200 8N1 (see fpga/kwe_monitor.py):
 
     s / S   speed_sel  +1 / -1        (BTN1 also does +1)
@@ -49,6 +53,7 @@ Serial commands, 115200 8N1 (see fpga/kwe_monitor.py):
     p       toggle spread
     m       toggle mirror
     r / R   reverse_sel +1 / -1
+    n       toggle MODE_SW (ui[0]): 0 = auto/pins, 1 = SPI registers
     x       reset the DUT (BTN0 also does this)
 */
 
@@ -211,6 +216,7 @@ module kwe_fpga_top #(
     reg       spread_sel;
     reg       mirror_sel;
     reg [1:0] reverse_sel;
+    reg       mode_sel;      // ui[0] MODE_SW: 0 = auto/pins, 1 = SPI registers
 
     wire [7:0] cmd_data;
     wire       cmd_valid;
@@ -229,6 +235,7 @@ module kwe_fpga_top #(
             spread_sel  <= DEF_SPREAD;
             mirror_sel  <= DEF_MIRROR;
             reverse_sel <= DEF_REVERSE;
+            mode_sel    <= 1'b0;       // auto mode; SPI control must be opted into
         end else begin
             if (btn_speed_rise) begin
                 speed_sel <= speed_sel + 4'd1;
@@ -244,6 +251,7 @@ module kwe_fpga_top #(
                     8'h6D: mirror_sel  <= ~mirror_sel;          // 'm'
                     8'h72: reverse_sel <= reverse_sel + 2'd1;   // 'r'
                     8'h52: reverse_sel <= reverse_sel - 2'd1;   // 'R'
+                    8'h6E: mode_sel    <= ~mode_sel;            // 'n'
                     default: ;                                  // ignore
                 endcase
             end
@@ -261,7 +269,7 @@ module kwe_fpga_top #(
     // spis_synchro inside the DUT is what makes them safe, and putting
     // anything else in the path would mean the RP2040 is not talking to the
     // same logic the chip will have.
-    wire [7:0] ui_in  = {spread_sel, amp_sel, speed_sel, 1'b0};
+    wire [7:0] ui_in  = {spread_sel, amp_sel, speed_sel, mode_sel};
     wire [7:0] uio_in = {1'b0, reverse_sel, mirror_sel,
                          1'b0, spi_mosi, spi_sck, spi_cs};
 
@@ -310,7 +318,9 @@ module kwe_fpga_top #(
     );
 
     // Field 0 of the report line: what the DUT is actually being told to do.
-    wire [15:0] ctrl_word = {6'd0, spread_sel, amp_sel, speed_sel,
+    // Bit 10 is mode_sel. The decoders in test/fpga and kwe_monitor.py read
+    // named bit ranges below it, so adding one on top leaves them untouched.
+    wire [15:0] ctrl_word = {5'd0, mode_sel, spread_sel, amp_sel, speed_sel,
                              mirror_sel, reverse_sel};
 
     wire       tx_send;

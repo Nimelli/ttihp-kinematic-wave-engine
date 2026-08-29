@@ -56,8 +56,12 @@ CMD_WRITE = 0x02
 DATA_BYTE = 3
 
 
-# Seeded by the initial block in registers.v
-SEEDED = {0x00: 0xA5, 0x01: 0x3C, 0x02: 0xFF}
+# Reset values of the writable registers, per registers.v.
+SEEDED = {0x00: 0x38, 0x01: 0x00}
+
+# Read-only constant, parked above the writable block.
+ADDR_ID = 0x7F
+CHIP_ID = 0xA5
 
 
 def u(sig):
@@ -446,7 +450,12 @@ async def test_read_latency_probe(dut):
     """
     master = await reset_dut(dut)
 
-    addr, expected = 0x01, SEEDED[0x01]
+    # Write a distinctive marker first. The reset value of a register may well
+    # be 0x00, which appears on every other MISO byte too and would match at
+    # byte 0 by accident -- exactly the off-by-one this test exists to detect.
+    addr, expected = 0x01, 0x3C
+    await write_reg(master, addr, expected)
+
     mosi = [CMD_READ, addr] + [0x00] * 4
     miso = await master.transfer(mosi)
     dut._log.info(describe(mosi, miso, f"latency probe, addr 0x{addr:02X}:"))
@@ -490,16 +499,21 @@ async def test_back_to_back_frames(dut):
     """Two frames in a row: the second must not inherit the first one's state."""
     master = await reset_dut(dut)
 
-    first = await master.transfer(read_frame(0x00))
-    second = await master.transfer(read_frame(0x02))
+    # Two different values in two different registers, so a frame that reuses
+    # the previous frame's address shows up as a mismatch rather than as a
+    # coincidence.
+    await write_reg(master, 0x00, 0x5A)
+    await write_reg(master, 0x01, 0xC3)
 
-    assert first[DATA_BYTE] == SEEDED[0x00], (
-        f"frame 1 returned {hexlist(first)}, expected 0x{SEEDED[0x00]:02X} "
-        f"on byte {DATA_BYTE}"
+    first = await master.transfer(read_frame(0x00))
+    second = await master.transfer(read_frame(0x01))
+
+    assert first[DATA_BYTE] == 0x5A, (
+        f"frame 1 returned {hexlist(first)}, expected 0x5A on byte {DATA_BYTE}"
     )
-    assert second[DATA_BYTE] == SEEDED[0x02], (
-        f"frame 2 returned {hexlist(second)}, expected 0x{SEEDED[0x02]:02X} "
-        f"on byte {DATA_BYTE} -- the phase/addr state did not reset on CS falling"
+    assert second[DATA_BYTE] == 0xC3, (
+        f"frame 2 returned {hexlist(second)}, expected 0xC3 on byte {DATA_BYTE} "
+        "-- the phase/addr state did not reset on CS falling"
     )
     assert second[0] == 0x00, (
         f"frame 2 opened with 0x{second[0]:02X} on MISO -- spis_phy captures "
@@ -586,8 +600,8 @@ async def test_write_drives_zero_on_miso(dut):
     """A WRITE frame must put 0x00 on every MISO byte.
 
     The bus never turns around for a write, so anything non-zero here means the
-    read path is driving when it should not be. Address 0x00 is seeded, which
-    makes it the most tempting thing to leak.
+    read path is driving when it should not be. Address 0x00 resets non-zero,
+    which makes it the most tempting thing to leak.
     """
     master = await reset_dut(dut)
     mon = PadMonitor(dut)
@@ -609,7 +623,7 @@ async def test_write_overwrites_reset_default(dut):
     """A reset default must be overwritable, and stay overwritten."""
     master = await reset_dut(dut)
 
-    addr, value = 0x01, 0xC3        # 0x01 resets to 0x3C
+    addr, value = 0x01, 0xC3        # WAVE1, resets to 0x00
     assert await read_reg(master, addr) == SEEDED[addr], (
         "addr 0x01 did not come out of reset at its default"
     )
@@ -812,10 +826,60 @@ async def test_slow_master(dut):
     master = await reset_dut(dut)
     master.half = 20            # ~208 kHz
 
-    mosi = read_frame(0x02)
+    mosi = read_frame(0x00)
     miso = await master.transfer(mosi)
-    assert miso[DATA_BYTE] == SEEDED[0x02], (
+    assert miso[DATA_BYTE] == SEEDED[0x00], (
         f"slow master returned "
         f"{'XX' if miso[DATA_BYTE] is None else f'0x{miso[DATA_BYTE]:02X}'}, "
-        f"expected 0x{SEEDED[0x02]:02X}\n" + describe(mosi, miso)
+        f"expected 0x{SEEDED[0x00]:02X}\n" + describe(mosi, miso)
     )
+
+
+@cocotb.test(timeout_time=200, timeout_unit="us")
+async def test_id_register_is_read_only(dut):
+    """0x7F reads a constant and cannot be written.
+
+    It costs no flops -- it is decoded ahead of the array in the read mux -- and
+    it is what makes a returned chip testable in one command: a value that is
+    neither 0x00 (a dead MISO) nor 0xFF (a floating one).
+    """
+    master = await reset_dut(dut)
+
+    assert await read_reg(master, ADDR_ID) == CHIP_ID, (
+        f"ID register read 0x{await read_reg(master, ADDR_ID):02X}, expected "
+        f"0x{CHIP_ID:02X}"
+    )
+
+    await write_reg(master, ADDR_ID, 0x00)
+    assert await read_reg(master, ADDR_ID) == CHIP_ID, (
+        "the ID register accepted a write -- it is decoded outside the writable "
+        "array and must be a constant"
+    )
+
+
+@cocotb.test(timeout_time=400, timeout_unit="us")
+async def test_read_at_the_recommended_sck_ceiling(dut):
+    """A read must return correct data at the rate the datasheet promises.
+
+    The binding limit is not edge detection, it is the MISO turnaround: a SCK
+    falling edge needs 3 system clocks to reach the pad through the
+    synchroniser, and the master samples half an SCK period later. See the
+    header of spis_synchro.v for the derivation.
+
+    SCK_HALF here is in system clocks, and this BFM's period works out at
+    2*half+1, so half=4 is clk/9 -- just inside the clk/8 worst case. Anything
+    at or below this must read correctly; half=1 (clk/3) is known to return the
+    data shifted one bit late, which is what the limit exists to prevent.
+    """
+    master = await reset_dut(dut)
+    master.half = 4
+
+    for addr, expected in SEEDED.items():
+        mosi = read_frame(addr)
+        miso = await master.transfer(mosi)
+        assert miso[DATA_BYTE] == expected, (
+            f"at SCK_HALF={master.half}, addr 0x{addr:02X} returned "
+            f"{'XX' if miso[DATA_BYTE] is None else f'0x{miso[DATA_BYTE]:02X}'}, "
+            f"expected 0x{expected:02X} -- the MISO turnaround is not keeping up\n"
+            + describe(mosi, miso)
+        )

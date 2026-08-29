@@ -64,9 +64,9 @@ def nominal_period_s(speed_sel):
     """Wave period at a speed setting: 65536 accumulator units at `inc`/frame."""
     return 65536 / (SPEED_INC[speed_sel] * FRAME_HZ)
 
-KEYS = "sSaApmrRx"
+KEYS = "sSaApmrRnx"
 KEY_HELP = (
-    "s/S speed  a/A amp  p spread  m mirror  r/R reverse  x reset  q quit"
+    "s/S speed  a/A amp  p spread  m mirror  r/R reverse  n mode  x reset  q quit"
 )
 
 

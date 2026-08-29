@@ -10,9 +10,39 @@ Brief:      SPI Slave - Clock Domain Crossing of asynchronous SPI clock
 
 Pass each pin through a two-stage D flip-flop (double-flop) chain followed by a 1-bit delay stage for edge detection
 
-Maximum SPI Clock Constraint: 
-Because the project system clock is 10 MHz, the external SPI SCK frequency must not exceed 2.5 MHz 
-Oversampling requires SCK to stay high and low for at least 1–2 system clock cycles to guarantee reliable edge detection without missing pulses.
+Maximum SPI Clock Constraint:
+
+Two separate limits apply, and the tighter one wins.
+
+1. EDGE DETECTION (this module). Oversampling requires SCK to stay high and low
+   for at least 1-2 system clock cycles to guarantee reliable edge detection
+   without missing pulses. At a 10 MHz system clock that is SCK <= 2.5 MHz.
+
+2. MISO TURNAROUND (spis_phy, through this module). This one is tighter, and it
+   is the one that actually caps the bus. A physical SCK falling edge at time T
+   reaches miso_r like this:
+
+       T+1  clk_r[0] captures the new level
+       T+2  clk_r[1] follows -- spi_clk_falling asserts for this cycle
+       T+3  spis_phy has updated miso_r; MISO is valid on the pad
+
+   The master samples MISO at the NEXT RISING edge, half an SCK period after T,
+   so it needs half >= 3 system clocks: SCK <= clk/6 = 1.67 MHz.
+
+   Add one more clock because SCK is asynchronous. Whether the first flop sees
+   an edge in cycle k or k+1 depends on where it lands relative to the system
+   clock, and on real hardware that alignment drifts continuously -- so the
+   worst case is one clock later than the nominal path above. half >= 4:
+
+       SCK <= clk/8 = 1.25 MHz at a 10 MHz system clock
+
+Measured against the RTL, a read returns correct data at clk/5 and fails at
+clk/3, which brackets the analysis. Simulation drives SCK synchronously to clk
+and therefore only ever exercises one phase alignment, so the derived clk/8 is
+the number to design to, not the measured clk/5.
+
+RECOMMENDED: 1 MHz (clk/10). It clears the worst case with margin and there is
+nothing to gain from going faster -- the whole register map is 2 bytes.
 
 */
 

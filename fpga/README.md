@@ -271,9 +271,11 @@ restores the defaults (speed 8, amp 3, spread 0, mirror 0, reverse 0).
 | `spread_sel` | `ui[7]` | `p` |
 | `mirror_sel` | `uio[4]` | `m` |
 | `reverse_sel` | `uio[6:5]` | `r` / `R` |
+| `MODE_SW` | `ui[0]` | `n` |
 
-`ui[0]` (MODE_SW) is still tied low: the SPI registers do not drive the wave
-parameters yet. `uio[3:0]` are the SPI slave — see Step 7.
+`MODE_SW` powers up **low** — auto mode, parameters from the pins, the SPI
+registers inert. `n` toggles it. The safe state is the one you get by doing
+nothing. `uio[3:0]` are the SPI slave — see Step 7.
 
 ## Step 7 — the SPI slave, driven by an RP2040
 
@@ -304,9 +306,17 @@ unplugged or in reset those lines float, and a floating active-low CS reads as
 
 ### Two constraints the master must respect
 
-**SCK ≤ 2.5 MHz.** The slave oversamples SCK rather than clocking off it, so
-it needs SCK high and low for at least two 10 MHz system clocks each. 1 MHz is
-a comfortable default. See `src/spis_synchro.v`.
+**SCK ≤ 1.25 MHz — use 1 MHz.** Two limits apply and the tighter one binds.
+Edge detection needs SCK high and low for ≥2 system clocks (2.5 MHz), but the
+*MISO turnaround* is what actually caps the bus: a SCK falling edge takes 3
+system clocks to reach the pad through the synchroniser, plus one more for the
+asynchronous alignment, and the master samples half an SCK period later. That
+gives clk/8 = 1.25 MHz. Measured against the RTL, a read is correct at clk/5
+and returns data shifted one bit late at clk/3. Derivation in
+`src/spis_synchro.v`.
+
+At 1 MHz you have comfortable margin, and there is nothing to gain from going
+faster — the whole map is two bytes.
 
 **~400 ns between CS falling and the first SCK edge.** The synchroniser delays
 CS by 2–3 clocks, and the MSB has to reach the pad before the master samples
@@ -314,6 +324,22 @@ it — in mode 0 there is no falling edge before that first sample. This is the
 ordinary SPI CS-setup time, just larger than on a natively-clocked slave.
 MicroPython's per-call overhead covers it by accident; the explicit sleep
 below covers it on purpose.
+
+### The register map
+
+| addr | name | access | reset | contents |
+|---|---|---|---|---|
+| `0x00` | WAVE0 | RW | `0x38` | `[3:0]` SPEED, `[5:4]` AMP, `[6]` SPREAD, `[7]` MIRROR |
+| `0x01` | WAVE1 | RW | `0x00` | `[1:0]` REVERSE, `[7:2]` reserved |
+| `0x7F` | ID | RO | `0xA5` | constant — reads neither `0x00` (dead MISO) nor `0xFF` (floating) |
+
+The registers only reach the wave engine when **`ui[0]` MODE_SW is high**. With
+MODE_SW low the chip is in auto mode and the SPI side is a spectator: writing
+the registers changes nothing. That is deliberate, and it is what makes the SPI
+block safe to have on a chip whose priority is auto-mode.
+
+WAVE0's reset value is speed=8, amp=3 — a wave worth shipping, because it is
+what the chip runs if MODE_SW is ever stuck high with no master attached.
 
 ### The protocol
 
@@ -351,14 +377,24 @@ def xfer(data):
 def read_reg(addr):        return xfer([0x03, addr, 0x00, 0x00])[3]
 def write_reg(addr, val):  xfer([0x02, addr, val])
 
-print([hex(read_reg(a)) for a in (0, 1, 2)])   # ['0xa5', '0x3c', '0xff']
-write_reg(1, 0x5A)
-print(hex(read_reg(1)))                        # 0x5a
+print(hex(read_reg(0x7F)))                     # 0xa5 -- the link is alive
+print(hex(read_reg(0x00)))                     # 0x38 -- speed 8, amp 3
+
+# Drive the wave from SPI. Requires ui[0] MODE_SW high.
+def set_wave(speed=8, amp=3, spread=0, mirror=0, reverse=0):
+    write_reg(0x00, (speed & 0xF) | ((amp & 3) << 4)
+                    | ((spread & 1) << 6) | ((mirror & 1) << 7))
+    write_reg(0x01, reverse & 3)
+
+set_wave(speed=12, amp=3, spread=1)
 ```
 
-`0xa5 0x3c 0xff` on the first try means the whole chain is alive: pads, CDC,
-PHY, protocol decode, register file, and MISO back out. Those are the reset
-defaults in `src/registers.v`.
+`0xa5` from the ID register on the first try means the whole chain is alive:
+pads, CDC, PHY, protocol decode, register file, and MISO back out.
+
+**Nothing you write moves the servos until MODE_SW (`ui[0]`) is high.** Press
+`n` on the serial port to toggle it. It powers up low, so the chip is in auto
+mode until you deliberately hand control over.
 
 ### If it does not work
 
