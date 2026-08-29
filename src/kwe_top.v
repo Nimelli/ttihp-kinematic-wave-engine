@@ -83,13 +83,13 @@ module tt_um_nimelli_kinematic_wave_engine (
     wire       mode_spi = ui_in[0];         // MODE_SW
 
     wire [7:0] spi_wave0;                   // reg 0x00, see registers.v
-    wire [7:0] spi_wave1;                   // reg 0x01
+    wire [1:0] spi_wave1;                   // reg 0x01, REVERSE only
 
     wire [3:0] speed_sel   = mode_spi ? spi_wave0[3:0] : ui_in[4:1];   // 16 wave periods, 20.1 s .. 0.26 s
     wire [1:0] amp_sel     = mode_spi ? spi_wave0[5:4] : ui_in[6:5];   // 25 / 50 / 75 / 100 %
     wire       spread_sel  = mode_spi ? spi_wave0[6]   : ui_in[7];     // 0 = full wavelength, 1 = half
     wire       mirror_sel  = mode_spi ? spi_wave0[7]   : uio_in[4];    // 1 = two-ball mirrored mode
-    wire [1:0] reverse_sel = mode_spi ? spi_wave1[1:0] : uio_in[6:5];  // reverse after 2 / 3 / 4 / 6 cycles
+    wire [1:0] reverse_sel = mode_spi ? spi_wave1      : uio_in[6:5];  // reverse after 2 / 3 / 4 / 6 cycles
 
 
     // ---------------------------------------------------------------

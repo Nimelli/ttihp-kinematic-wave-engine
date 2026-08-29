@@ -70,22 +70,24 @@ module spis_synchro (
 
 );
 
-    // 3-bit shift registers: 
-    // [0] = raw async, [1] = stage1, [2] = stage2
+    // Shift registers: [0] = raw async, [1] = stage1, [2] = stage2.
+    // SCK and CS need the third stage for their edge detectors below. MOSI has
+    // no edge detector -- only its level is ever read -- so a third stage there
+    // would be a flop clocked every cycle and never looked at.
     reg [2:0] clk_r;
     reg [2:0] cs_r;
-    reg [2:0] mosi_r;
+    reg [1:0] mosi_r;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             clk_r   <= 3'b000; // CLK default low (SPI mode 0, CPOL 0)
             cs_r    <= 3'b111; // CS default high
-            mosi_r  <= 3'b000; 
+            mosi_r  <= 2'b00;
         end else begin
             // shift in the async signal
             clk_r  <= {clk_r[1:0],  spi_clk_async};
             cs_r   <= {cs_r[1:0],   spi_cs_async};
-            mosi_r <= {mosi_r[1:0], spi_mosi_async};
+            mosi_r <= {mosi_r[0], spi_mosi_async};
         end
     end
 

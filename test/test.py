@@ -912,10 +912,14 @@ async def test_spi_register_map(dut):
         "the ID register accepted a write -- it is supposed to be a constant"
     )
 
-    for addr in (REG_WAVE0, REG_WAVE1):
+    # registers.v masks reserved bits on write, so they read back 0. WAVE1 has
+    # only REVERSE[1:0]; everything above it is reserved.
+    for addr, mask in ((REG_WAVE0, 0xFF), (REG_WAVE1, 0x03)):
         await spi_write_reg(dut, addr, 0x5A)
-        assert await spi_read_reg(dut, addr) == 0x5A, (
-            f"register 0x{addr:02X} did not hold a written value"
+        got = await spi_read_reg(dut, addr)
+        assert got == (0x5A & mask), (
+            f"register 0x{addr:02X} returned 0x{got:02X} after writing 0x5A, "
+            f"expected 0x{0x5A & mask:02X}"
         )
 
     assert await spi_read_reg(dut, 0x40) == 0x00, (

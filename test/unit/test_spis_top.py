@@ -63,6 +63,17 @@ SEEDED = {0x00: 0x38, 0x01: 0x00}
 ADDR_ID = 0x7F
 CHIP_ID = 0xA5
 
+# Which bits of each writable register actually exist. registers.v masks
+# reserved bits on write, so they read back 0 rather than echoing what was
+# written -- that is what lets synthesis delete the flops behind them, and it
+# is what a datasheet reader expects. Tests that write arbitrary bytes have to
+# compare against the masked value, not the value they sent.
+REG_MASK = {0x00: 0xFF, 0x01: 0x03}
+
+
+def masked(addr, value):
+    return value & REG_MASK.get(addr, 0xFF)
+
 
 def u(sig):
     return int(sig.value)
@@ -319,7 +330,9 @@ async def reg_count(master, limit=64):
         original = await read_reg(master, addr)
         if original is None:
             break
-        probe = original ^ 0xFF     # always differs from what is already there
+        # Flip bit 0 only. A wider probe would be masked away in a register
+        # that has reserved bits, and the address would then look unwritable.
+        probe = original ^ 0x01
         await write_reg(master, addr, probe)
         if await read_reg(master, addr) != probe:
             break
@@ -453,7 +466,7 @@ async def test_read_latency_probe(dut):
     # Write a distinctive marker first. The reset value of a register may well
     # be 0x00, which appears on every other MISO byte too and would match at
     # byte 0 by accident -- exactly the off-by-one this test exists to detect.
-    addr, expected = 0x01, 0x3C
+    addr, expected = 0x00, 0x3C      # WAVE0: all eight bits are real
     await write_reg(master, addr, expected)
 
     mosi = [CMD_READ, addr] + [0x00] * 4
@@ -503,7 +516,7 @@ async def test_back_to_back_frames(dut):
     # the previous frame's address shows up as a mismatch rather than as a
     # coincidence.
     await write_reg(master, 0x00, 0x5A)
-    await write_reg(master, 0x01, 0xC3)
+    await write_reg(master, 0x01, 0x03)
 
     first = await master.transfer(read_frame(0x00))
     second = await master.transfer(read_frame(0x01))
@@ -511,8 +524,8 @@ async def test_back_to_back_frames(dut):
     assert first[DATA_BYTE] == 0x5A, (
         f"frame 1 returned {hexlist(first)}, expected 0x5A on byte {DATA_BYTE}"
     )
-    assert second[DATA_BYTE] == 0xC3, (
-        f"frame 2 returned {hexlist(second)}, expected 0xC3 on byte {DATA_BYTE} "
+    assert second[DATA_BYTE] == 0x03, (
+        f"frame 2 returned {hexlist(second)}, expected 0x03 on byte {DATA_BYTE} "
         "-- the phase/addr state did not reset on CS falling"
     )
     assert second[0] == 0x00, (
@@ -582,7 +595,7 @@ async def test_write_then_read(dut):
 
     addr = n - 1                    # the top of the range, most likely to be mis-decoded
     original = await read_reg(master, addr)
-    value = original ^ 0x5A
+    value = masked(addr, original ^ 0x5A)
 
     mosi = write_frame(addr, value)
     miso = await master.transfer(mosi)
@@ -623,7 +636,7 @@ async def test_write_overwrites_reset_default(dut):
     """A reset default must be overwritable, and stay overwritten."""
     master = await reset_dut(dut)
 
-    addr, value = 0x01, 0xC3        # WAVE1, resets to 0x00
+    addr, value = 0x00, 0xC3        # WAVE0: non-zero reset, every bit real
     assert await read_reg(master, addr) == SEEDED[addr], (
         "addr 0x01 did not come out of reset at its default"
     )
@@ -641,7 +654,7 @@ async def test_write_does_not_disturb_neighbours(dut):
 
     addr = n // 2
     before = {a: await read_reg(master, a) for a in range(n) if a != addr}
-    value = (await read_reg(master, addr)) ^ 0x9E
+    value = masked(addr, (await read_reg(master, addr)) ^ 0x9E)
 
     await write_reg(master, addr, value)
 
@@ -739,7 +752,7 @@ async def test_write_read_alternating_sequence(dut):
     expected = {}
     for pass_no in (0, 1):
         for addr in range(n):
-            value = (0x11 * (addr + 1) + 0x40 * pass_no) & 0xFF
+            value = masked(addr, (0x11 * (addr + 1) + 0x40 * pass_no) & 0xFF)
             await write_reg(master, addr, value)
             expected[addr] = value
             got = await read_reg(master, addr)
@@ -882,4 +895,25 @@ async def test_read_at_the_recommended_sck_ceiling(dut):
             f"{'XX' if miso[DATA_BYTE] is None else f'0x{miso[DATA_BYTE]:02X}'}, "
             f"expected 0x{expected:02X} -- the MISO turnaround is not keeping up\n"
             + describe(mosi, miso)
+        )
+
+
+@cocotb.test(timeout_time=200, timeout_unit="us")
+async def test_reserved_bits_read_back_zero(dut):
+    """Reserved bits must read 0, not echo what was written.
+
+    registers.v masks them on write. That is not cosmetic: it is what lets
+    synthesis delete the flops behind them -- masking inside a uniform array
+    does not, because the write index is computed and the tool cannot prove the
+    narrow mask applies to that element. Declaring the register at its true
+    width does. This test pins the visible half of that decision.
+    """
+    master = await reset_dut(dut)
+
+    for addr, mask in REG_MASK.items():
+        await write_reg(master, addr, 0xFF)
+        got = await read_reg(master, addr)
+        assert got == mask, (
+            f"register 0x{addr:02X} returned 0x{got:02X} after writing 0xFF, "
+            f"expected 0x{mask:02X} -- bits outside the mask must read 0"
         )

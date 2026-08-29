@@ -50,8 +50,10 @@ module spis_app (
     input wire      rx_byte_valid,
     input wire      [7:0] rx_data,
 
-    // Transmitting byte
-    input wire      tx_load,
+    // Transmitting byte. spis_phy also exposes tx_load, a strobe marking the
+    // cycle it captured tx_data; this layer does not need it, because tx_data
+    // is driven combinationally from `phase` and is always correct at the
+    // moment the PHY looks. A burst or FIFO source would want it.
     output wire     [7:0] tx_data,
 
     // register file interface

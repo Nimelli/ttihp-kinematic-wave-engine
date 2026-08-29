@@ -36,11 +36,10 @@ module spis_top (
     // registers.v for the map. These are plain flop outputs: they are only
     // ever LOOKED AT by the wave engine, and only when MODE_SW says so.
     output wire [7:0] wave0,
-    output wire [7:0] wave1
+    output wire [1:0] wave1
 );
 
     // ---- spis_synchro -> spis_phy ------------------------------------
-    wire spi_clk_sync;          // unused by the logic, kept for waveform reading
     wire spi_mosi_sync;
     wire spi_cs_sync;
     wire spi_clk_rising;        // 1 cc, SCK low to high
@@ -51,7 +50,6 @@ module spis_top (
     wire [7:0] rx_data;
     wire       rx_byte_valid;
     wire [7:0] tx_data;
-    wire       tx_load;
 
     // ---- spis_app <-> reg_file ---------------------------------------
     wire [7:0] reg_addr;
@@ -67,7 +65,7 @@ module spis_top (
         .spi_mosi_async     (spi_mosi),
         .spi_cs_async       (spi_cs),
 
-        .spi_clk_sync       (spi_clk_sync),
+        .spi_clk_sync       (),                 // level output; nothing here needs it
         .spi_mosi_sync      (spi_mosi_sync),
         .spi_cs_sync        (spi_cs_sync),
 
@@ -91,7 +89,7 @@ module spis_top (
         .rx_byte_valid      (rx_byte_valid),
 
         .tx_data            (tx_data),
-        .tx_load            (tx_load),
+        .tx_load            (),                 // no consumer yet; see spis_phy.v
         .spi_miso           (spi_miso),
         .spi_miso_oe        (spi_miso_oe)
     );
@@ -105,7 +103,6 @@ module spis_top (
         .rx_byte_valid      (rx_byte_valid),
         .rx_data            (rx_data),
 
-        .tx_load            (tx_load),
         .tx_data            (tx_data),
 
         .reg_addr           (reg_addr),

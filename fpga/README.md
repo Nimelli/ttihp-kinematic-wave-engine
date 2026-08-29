@@ -330,7 +330,7 @@ below covers it on purpose.
 | addr | name | access | reset | contents |
 |---|---|---|---|---|
 | `0x00` | WAVE0 | RW | `0x38` | `[3:0]` SPEED, `[5:4]` AMP, `[6]` SPREAD, `[7]` MIRROR |
-| `0x01` | WAVE1 | RW | `0x00` | `[1:0]` REVERSE, `[7:2]` reserved |
+| `0x01` | WAVE1 | RW | `0x00` | `[1:0]` REVERSE, `[7:2]` reserved (read back 0) |
 | `0x7F` | ID | RO | `0xA5` | constant — reads neither `0x00` (dead MISO) nor `0xFF` (floating) |
 
 The registers only reach the wave engine when **`ui[0]` MODE_SW is high**. With
