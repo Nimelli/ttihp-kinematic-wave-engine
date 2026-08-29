@@ -60,6 +60,32 @@ set_property -dict { PACKAGE_PIN W2 IOSTANDARD LVCMOS33 DRIVE 8 SLEW SLOW } [get
 set_property -dict { PACKAGE_PIN V2 IOSTANDARD LVCMOS33 DRIVE 8 SLEW SLOW } [get_ports { servo[7] }]
 
 ## --------------------------------------------------------------------
+## P1 SPI slave -- DIP pins 1..4, for an external master (RP2040)
+##
+## Pin 1 is the one marked with a triangle on the silkscreen, so the block
+## is findable by touch when wiring by hand. Chosen at the opposite end of
+## the board from the servos (26..33), and deliberately NOT 21..23: those
+## sit next to DIP 24, which is VU (5 V), and a slipped jumper there would
+## put 5 V into a 3.3 V bank.
+##
+## Ground the RP2040 to DIP pin 25. Sharing a USB host ground is not enough
+## -- it is a long, shared return path, and SCK edges belong on a short one.
+##
+## PULLUP on CS because it is active low: with the master unplugged or held
+## in reset the line floats, and a floating CS reads as "selected". The
+## slave would then drive MISO and clock on noise. PULLDOWN on SCK matches
+## the CPOL=0 idle level for the same reason.
+##
+## No timing constraints here on purpose. SCK is not a clock in this design
+## -- spis_synchro oversamples it as data -- so there is nothing for STA to
+## constrain. The real constraint is on the master: SCK <= clk/4 = 2.5 MHz.
+## --------------------------------------------------------------------
+set_property -dict { PACKAGE_PIN M3  IOSTANDARD LVCMOS33 PULLUP true }   [get_ports { spi_cs }]
+set_property -dict { PACKAGE_PIN L3  IOSTANDARD LVCMOS33 PULLDOWN true } [get_ports { spi_sck }]
+set_property -dict { PACKAGE_PIN A16 IOSTANDARD LVCMOS33 }               [get_ports { spi_mosi }]
+set_property -dict { PACKAGE_PIN K3  IOSTANDARD LVCMOS33 DRIVE 8 SLEW SLOW } [get_ports { spi_miso }]
+
+## --------------------------------------------------------------------
 ## Configuration
 ##
 ## CFGBVS/CONFIG_VOLTAGE describe bank 0 and are required on 7-series --

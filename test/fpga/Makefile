@@ -30,6 +30,11 @@ VERILOG_SOURCES = \
 	$(SRC_DIR)/kwe_amp_scale.v   \
 	$(SRC_DIR)/kwe_speed_rom.v   \
 	$(SRC_DIR)/kwe_phase_gen.v   \
+	$(SRC_DIR)/spis_top.v        \
+	$(SRC_DIR)/spis_synchro.v    \
+	$(SRC_DIR)/spis_phy.v        \
+	$(SRC_DIR)/spis_app.v        \
+	$(SRC_DIR)/registers.v       \
 	$(FPGA_DIR)/kwe_debounce.v      \
 	$(FPGA_DIR)/kwe_uart_tx.v       \
 	$(FPGA_DIR)/kwe_uart_rx.v       \

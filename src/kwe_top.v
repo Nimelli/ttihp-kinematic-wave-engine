@@ -150,20 +150,52 @@ module tt_um_nimelli_kinematic_wave_engine (
 
 
     // ---------------------------------------------------------------
+    // SPI slave (P1)
+    //
+    //   uio[0]  SPI_CS    in
+    //   uio[1]  SPI_SCK   in
+    //   uio[2]  SPI_MOSI  in
+    //   uio[3]  SPI_MISO  out -- the only uio this design ever drives
+    //
+    // Mode 0, and SCK is oversampled rather than used as a clock, so the
+    // master must stay at or below clk/4 = 2.5 MHz. See spis_synchro.v.
+    //
+    // The register file is NOT wired to the wave parameters yet. This stage
+    // only proves the link works end to end; ui_in[0] (MODE_SW) still does
+    // nothing, and the parameters still come from the pins above.
+    // ---------------------------------------------------------------
+    wire spi_miso;
+    wire spi_miso_oe;
+
+    spis_top u_spis (
+        .clk         (clk),
+        .rst_n       (rst_n),
+
+        .spi_clk     (uio_in[1]),
+        .spi_mosi    (uio_in[2]),
+        .spi_cs      (uio_in[0]),
+
+        .spi_miso    (spi_miso),
+        .spi_miso_oe (spi_miso_oe)
+    );
+
+
+    // ---------------------------------------------------------------
     // Bidirectional pins
     //
-    // Every uio is an INPUT in this design
+    // uio[3] is an output while the slave is selected, Hi-Z otherwise, so a
+    // master can share the bus. Every other uio stays an input.
     // ---------------------------------------------------------------
-    assign uio_out = 8'h00;
-    assign uio_oe  = 8'h00;
+    assign uio_out = {4'b0000, spi_miso,    3'b000};
+    assign uio_oe  = {4'b0000, spi_miso_oe, 3'b000};
 
 
     // Unused inputs, listed to keep the linter quiet.
-    //   ena         - always 1 while powered
-    //   ui_in[0]    - MODE_SW, reserved for P1 SPI
-    //   uio_in[3:0] - reserved for P1 SPI (CS/MOSI/SCK)
-    //   uio_in[7]   - spare
-    //   tick_en     - kwe_servo_pwm derives what it needs from tick_cnt
-    wire _unused = &{ena, ui_in[0], uio_in[3:0], uio_in[7], tick_en, 1'b0};
+    //   ena       - always 1 while powered
+    //   ui_in[0]  - MODE_SW, reserved for the P1 SPI parameter override
+    //   uio_in[3] - MISO is an output; the input leg of the pad is unused
+    //   uio_in[7] - spare
+    //   tick_en   - kwe_servo_pwm derives what it needs from tick_cnt
+    wire _unused = &{ena, ui_in[0], uio_in[3], uio_in[7], tick_en, 1'b0};
 
 endmodule

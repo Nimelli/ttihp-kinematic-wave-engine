@@ -38,6 +38,11 @@ set tapeout_sources [list \
     $root_dir/src/kwe_amp_scale.v \
     $root_dir/src/kwe_speed_rom.v \
     $root_dir/src/kwe_phase_gen.v \
+    $root_dir/src/spis_top.v      \
+    $root_dir/src/spis_synchro.v  \
+    $root_dir/src/spis_phy.v      \
+    $root_dir/src/spis_app.v      \
+    $root_dir/src/registers.v     \
 ]
 
 # FPGA-only test harness.

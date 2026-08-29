@@ -119,12 +119,26 @@ def set_pins(dut, speed=8, amp=3, spread=0, mirror=0, reverse=0, mode=0):
     """Drive the tuning pins. PRD §8.
 
     ui[0]=MODE ui[4:1]=SPEED ui[6:5]=AMP ui[7]=SPREAD
+    uio[0]=SPI_CS uio[1]=SPI_SCK uio[2]=SPI_MOSI uio[3]=SPI_MISO(out)
     uio[4]=MIRROR uio[6:5]=REVERSE
+
+    SPI_CS is driven HIGH: it is active low, so leaving it at 0 would select
+    the slave for the whole suite and make it drive MISO onto uio[3]. The SPI
+    link has its own tests in test/unit/test_spis_top.py; here it just has to
+    stay out of the way.
     """
     dut.ena.value = 1
     dut.ui_in.value = (mode & 1) | ((speed & 0xF) << 1) | \
                       ((amp & 3) << 5) | ((spread & 1) << 7)
-    dut.uio_in.value = ((mirror & 1) << 4) | ((reverse & 3) << 5)
+    dut.uio_in.value = SPI_CS_IDLE | ((mirror & 1) << 4) | ((reverse & 3) << 5)
+
+
+# uio[0] is SPI_CS, active low. Every uio_in written by this suite carries it.
+SPI_CS_IDLE = 1 << 0
+
+# uio[3] is SPI_MISO, the only pin this design ever drives, and only while the
+# SPI slave is selected. With CS parked high it must never turn on.
+UIO_OE_MISO = 1 << 3
 
 
 async def hard_reset(dut):
@@ -316,14 +330,44 @@ async def test_report_decode_glitches(dut):
 
 
 @cocotb.test()
-async def test_uio_is_all_input(dut):
-    """Every uio is an input: uio_oe must be 0x00. Common TT bring-up failure."""
+async def test_uio_oe_only_miso_and_only_when_selected(dut):
+    """uio[3] is the only pin this design may drive, and only while CS is low.
+
+    Was test_uio_is_all_input, before the SPI slave landed on uio[3:0]. The
+    check that matters is unchanged in spirit: a uio driven when it should not
+    be fights whatever else is on the bus, and it is a common TT bring-up
+    failure. What changed is that one pin is now allowed to drive, under one
+    condition.
+    """
     await warm(dut)
+
+    # CS is parked high by set_pins, so nothing may drive at all.
     for _ in range(4):
         await Timer(SLOT_NS, unit="ns")
         assert int(dut.uio_oe.value) == 0, (
-            f"uio_oe = 0x{int(dut.uio_oe.value):02x}, expected 0x00"
+            f"uio_oe = 0x{int(dut.uio_oe.value):02x} with SPI_CS high, expected "
+            "0x00 -- the slave must release the bus when it is not selected"
         )
+
+    # Select the slave: uio[3] may drive now, and only uio[3].
+    dut.uio_in.value = int(dut.uio_in.value) & ~SPI_CS_IDLE
+    await ClockCycles(dut.clk, 10)
+    oe = int(dut.uio_oe.value)
+    assert oe & ~UIO_OE_MISO == 0, (
+        f"uio_oe = 0x{oe:02x} with SPI_CS low, expected at most 0x08 -- only "
+        "uio[3] (MISO) may ever be an output"
+    )
+    assert oe == UIO_OE_MISO, (
+        f"uio_oe = 0x{oe:02x} with SPI_CS low, expected 0x08 -- the slave must "
+        "drive MISO once selected, or the master reads a floating pad"
+    )
+
+    # And it must let go again.
+    dut.uio_in.value = int(dut.uio_in.value) | SPI_CS_IDLE
+    await ClockCycles(dut.clk, 10)
+    assert int(dut.uio_oe.value) == 0, (
+        f"uio_oe = 0x{int(dut.uio_oe.value):02x} after CS went high, expected 0x00"
+    )
 
 
 # ===========================================================================

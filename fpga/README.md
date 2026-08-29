@@ -248,6 +248,10 @@ reference manual.
 | `servo[7]` | 33 | V2 |
 | **GND** | **25** | — |
 | **VU (5 V)** | **24** | — |
+| `spi_cs` | 1 | M3 |
+| `spi_sck` | 2 | L3 |
+| `spi_mosi` | 3 | A16 |
+| `spi_miso` | 4 | K3 |
 
 On-board: `sysclk` L17, `btn[0]` A18 (reset), `btn[1]` B18 (speed++),
 `led[0]` A17, `led[1]` C16, UART J18/J17.
@@ -268,8 +272,110 @@ restores the defaults (speed 8, amp 3, spread 0, mirror 0, reverse 0).
 | `mirror_sel` | `uio[4]` | `m` |
 | `reverse_sel` | `uio[6:5]` | `r` / `R` |
 
-`ui[0]` (MODE_SW) and `uio[3:0]` are the reserved P1 SPI pins and are tied
-low, matching what the DUT expects today.
+`ui[0]` (MODE_SW) is still tied low: the SPI registers do not drive the wave
+parameters yet. `uio[3:0]` are the SPI slave — see Step 7.
+
+## Step 7 — the SPI slave, driven by an RP2040
+
+`uio[3:0]` carry the P1 SPI slave and are wired straight out to DIP pins 1–4.
+The wrapper does not touch them — no synchroniser, no debounce, no test
+fixture. `spis_synchro` inside the DUT is what makes an asynchronous SCK safe,
+so what the RP2040 talks to is exactly what the chip will present.
+
+### Wiring
+
+Pin 1 is the one marked with a triangle on the silkscreen.
+
+| Cmod DIP | Package | Signal | RP2040 side |
+|---|---|---|---|
+| 1 | M3 | `SPI_CS` | any GPIO, driven high when idle |
+| 2 | L3 | `SPI_SCK` | SPI SCK |
+| 3 | A16 | `SPI_MOSI` | SPI TX |
+| 4 | K3 | `SPI_MISO` | SPI RX |
+| 25 | — | **GND** | **GND** |
+
+Run the ground wire. Both boards being on the same USB host is not a
+substitute — that is a long shared return path, and SCK edges belong on a
+short one.
+
+`SPI_CS` has a PULLUP and `SPI_SCK` a PULLDOWN in the XDC. With the RP2040
+unplugged or in reset those lines float, and a floating active-low CS reads as
+*selected*: the slave would drive MISO and clock on noise.
+
+### Two constraints the master must respect
+
+**SCK ≤ 2.5 MHz.** The slave oversamples SCK rather than clocking off it, so
+it needs SCK high and low for at least two 10 MHz system clocks each. 1 MHz is
+a comfortable default. See `src/spis_synchro.v`.
+
+**~400 ns between CS falling and the first SCK edge.** The synchroniser delays
+CS by 2–3 clocks, and the MSB has to reach the pad before the master samples
+it — in mode 0 there is no falling edge before that first sample. This is the
+ordinary SPI CS-setup time, just larger than on a natively-clocked slave.
+MicroPython's per-call overhead covers it by accident; the explicit sleep
+below covers it on purpose.
+
+### The protocol
+
+Mode 0 (CPOL=0, CPHA=0), MSB first.
+
+```
+READ  0x03:  [0x03] [ADDR] [dummy] [dummy]   register data on the 4th byte
+WRITE 0x02:  [0x02] [ADDR] [DATA]            MISO is 0x00 throughout
+```
+
+The READ's dummy byte is not padding. `spis_phy` grabs the byte it will shift
+out during byte N+1 at the *end* of byte N, one cycle before the protocol
+layer has latched byte N — so byte 3 is the first byte whose content can
+depend on the address. `src/spis_app.v` explains it in full.
+
+### RP2040, MicroPython
+
+```python
+import time
+from machine import Pin, SPI
+
+spi = SPI(0, baudrate=1_000_000, polarity=0, phase=0,
+          sck=Pin(18), mosi=Pin(19), miso=Pin(20))
+cs = Pin(25, Pin.OUT, value=1)
+
+def xfer(data):
+    buf = bytearray(len(data))
+    cs(0)
+    time.sleep_us(5)              # CS setup: the slave needs ~400 ns
+    spi.write_readinto(bytes(data), buf)
+    time.sleep_us(5)
+    cs(1)
+    return buf
+
+def read_reg(addr):        return xfer([0x03, addr, 0x00, 0x00])[3]
+def write_reg(addr, val):  xfer([0x02, addr, val])
+
+print([hex(read_reg(a)) for a in (0, 1, 2)])   # ['0xa5', '0x3c', '0xff']
+write_reg(1, 0x5A)
+print(hex(read_reg(1)))                        # 0x5a
+```
+
+`0xa5 0x3c 0xff` on the first try means the whole chain is alive: pads, CDC,
+PHY, protocol decode, register file, and MISO back out. Those are the reset
+defaults in `src/registers.v`.
+
+### If it does not work
+
+| Symptom | Likely cause |
+|---|---|
+| Every address reads `0x00` | MISO not getting back — check the DIP 4 wire, and that `uio_oe[3]` is driven by `spi_miso_oe` rather than tied off |
+| Every address reads `0xFF` | The slave is never driving; you are reading the RP2040's own pull-up. CS not actually reaching DIP 1, or CS never goes low |
+| Reads are shifted by one byte | The dummy byte is missing — a READ is 4 bytes, not 3 |
+| Correct on the first byte, garbage after | SCK too fast. Drop to 500 kHz and confirm |
+| Intermittent, worse with long wires | No ground wire, or the RP2040 is not grounded to DIP 25 |
+| Reads work, writes never stick | Address out of range: `reg_file` has `N_REGS` entries and drops writes past it |
+
+Before suspecting the board, run the slave in simulation — it is the same RTL:
+
+```bash
+cd test/unit && make MOD=spis_top     # 21 tests, seconds
+```
 
 ## Troubleshooting
 

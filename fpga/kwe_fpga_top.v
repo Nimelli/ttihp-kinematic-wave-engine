@@ -36,6 +36,12 @@ Three problems this wrapper solves:
    streamed out as ASCII once per frame. That is the substitute for the
    oscilloscope and the eight servos that do not exist yet.
 
+4. SPI ACCESS. The DUT's P1 SPI slave lives on uio[3:0]. Those four pins are
+   brought straight out to DIP pins 1-4 so an external master -- an RP2040 --
+   can drive them. Nothing in this wrapper touches them: it is a wire, not a
+   test fixture, so what the RP2040 talks to is exactly what the chip will
+   present.
+
 Serial commands, 115200 8N1 (see fpga/kwe_monitor.py):
 
     s / S   speed_sel  +1 / -1        (BTN1 also does +1)
@@ -58,7 +64,13 @@ module kwe_fpga_top #(
     output wire [1:0] led,
     output wire [7:0] servo,         // DIP pins 26..33
     output wire       uart_rxd_out,  // FPGA -> FTDI -> PC
-    input  wire       uart_txd_in    // PC  -> FTDI -> FPGA
+    input  wire       uart_txd_in,   // PC  -> FTDI -> FPGA
+
+    // P1 SPI slave, DIP pins 1-4. Driven by an external master (RP2040).
+    input  wire       spi_cs,        // active low
+    input  wire       spi_sck,
+    input  wire       spi_mosi,
+    output wire       spi_miso       // Hi-Z unless the slave is selected
 );
 
     // Power-on defaults. Chosen to be obviously alive: mid speed, full
@@ -241,9 +253,17 @@ module kwe_fpga_top #(
     // Pin mapping per info.yaml.
     //   ui_in[0]   MODE_SW, reserved for the P1 SPI override
     //   ui_in[4:1] SPEED    ui_in[6:5] AMP    ui_in[7] SPREAD
+    //   uio_in[0]  SPI_CS   uio_in[1] SPI_SCK   uio_in[2] SPI_MOSI
+    //   uio_in[3]  SPI_MISO is an OUTPUT of the DUT; its input leg is unused
     //   uio_in[4]  MIRROR   uio_in[6:5] REVERSE
+    //
+    // The SPI pins pass through untouched -- no synchroniser, no debounce.
+    // spis_synchro inside the DUT is what makes them safe, and putting
+    // anything else in the path would mean the RP2040 is not talking to the
+    // same logic the chip will have.
     wire [7:0] ui_in  = {spread_sel, amp_sel, speed_sel, 1'b0};
-    wire [7:0] uio_in = {1'b0, reverse_sel, mirror_sel, 4'b0000};
+    wire [7:0] uio_in = {1'b0, reverse_sel, mirror_sel,
+                         1'b0, spi_mosi, spi_sck, spi_cs};
 
 
     // ---------------------------------------------------------------
@@ -266,10 +286,16 @@ module kwe_fpga_top #(
 
     assign servo = uo_out;
 
-    // The DUT drives every uio as an input, so uio_out/uio_oe are constant
+    // MISO. uio_oe[3] is the DUT's own output enable, so the FPGA pin goes
+    // high-Z at exactly the moments the real chip's pad would -- the RP2040
+    // sees the same bus behaviour either way, and nothing fights it if it
+    // ever drives that line by mistake.
+    assign spi_miso = uio_oe[3] ? uio_out[3] : 1'bz;
+
+    // uio[3] is consumed above; every other uio_out/uio_oe bit is constant
     // zero. Kept alive so synthesis does not warn about dangling outputs.
-    wire _unused_dut = &{uio_out, uio_oe, btn_rst_rise_unused,
-                         btn_speed_level_unused, 1'b0};
+    wire _unused_dut = &{uio_out[7:4], uio_out[2:0], uio_oe[7:4], uio_oe[2:0],
+                         btn_rst_rise_unused, btn_speed_level_unused, 1'b0};
 
 
     // ---------------------------------------------------------------

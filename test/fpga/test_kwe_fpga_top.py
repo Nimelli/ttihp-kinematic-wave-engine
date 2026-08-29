@@ -70,6 +70,15 @@ async def start(dut):
     """
     dut.btn.value = 0
     dut.uart_txd_in.value = 1  # serial line idles high
+
+    # Park the SPI pins as an idle master leaves them, matching the PULLUP on
+    # CS and the PULLDOWN on SCK in the XDC. Left undriven they sit at X, and
+    # an X on an active-low CS means the slave's state is undefined for the
+    # whole run. The SPI link itself is tested in test/unit/test_spis_top.py.
+    dut.spi_cs.value = 1
+    dut.spi_sck.value = 0
+    dut.spi_mosi.value = 0
+
     cocotb.start_soon(Clock(dut.sysclk, CLK_NS, unit="ns").start())
     # por_sync then rst_sync are three flops each; ten clocks is ample.
     await Timer(10 * CLK_NS, "ns")

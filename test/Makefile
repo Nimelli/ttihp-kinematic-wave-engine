@@ -14,7 +14,12 @@ PROJECT_SOURCES = kwe_top.v \
 				kwe_angle_map.v \
 				kwe_amp_scale.v \
 				kwe_speed_rom.v \
-				kwe_phase_gen.v
+				kwe_phase_gen.v \
+				spis_top.v \
+				spis_synchro.v \
+				spis_phy.v \
+				spis_app.v \
+				registers.v
 
 ifneq ($(GATES),yes)
 
