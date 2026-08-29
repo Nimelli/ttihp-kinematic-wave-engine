@@ -24,7 +24,7 @@ a natively-clocked slave.
 
 `default_nettype none
 
-module spis_phy (
+module spis_phy ( 
     input  wire     clk,
     input  wire     rst_n,
 
@@ -43,7 +43,7 @@ module spis_phy (
 
     // MISO (transmitting) & port
     input wire      [7:0] tx_data,
-    output wire     tx_load,              // 1 cc: tx data was sent, can load new ones
+    output wire     tx_load,              // 1 cc: tx data was captured, can load next byte
     output wire     spi_miso,             // drive to the pad
     output wire     spi_miso_oe           // 1 = drive, 0 = Hi-Z (uio_oe is a per-bit enable)
 
@@ -103,7 +103,7 @@ module spis_phy (
             if (spi_cs_falling) begin
                 // Frame start: the MSB has to be on the pad before the first
                 // rising edge, so it is presented here and not on a falling edge.
-                tx_shift  <= tx_data;
+                tx_shift  <= tx_data; // capture data
                 miso_r    <= tx_data[7];
                 miso_oe_r <= 1'b1;
                 tx_load_r <= 1'b1;

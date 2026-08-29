@@ -20,6 +20,7 @@ MOD ?= kwe_timebase
 # Submodule dependencies, per module under test.
 DEPS_kwe_sine      = kwe_sine_lut.v
 DEPS_kwe_phase_gen = kwe_speed_rom.v
+DEPS_spis_top      = spis_synchro.v spis_phy.v spis_app.v registers.v
 
 VERILOG_SOURCES = $(addprefix $(SRC_DIR)/,$(MOD).v $(DEPS_$(MOD)))
 
